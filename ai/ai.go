@@ -11,7 +11,7 @@ import (
 )
 
 const MaxChars = 300
-const MaxHistory = 10
+const MaxHistory =4
 
 type FunctionCall struct {
 	Name      string `json:"name"`
@@ -146,7 +146,7 @@ func callQwenWithTools(messages []GroqMessage) (string, *LeadArgs, error) {
 	}
 
 	reqBody, _ := json.Marshal(GroqRequest{
-		Model:    "groq/compound",
+		Model:    "qwen/qwen3.6-27b",
 		Messages: messages,
 		Tools:    []Tool{telegramTool},
 	})

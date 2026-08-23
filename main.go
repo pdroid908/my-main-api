@@ -1,6 +1,7 @@
-package api
+package main
 
 import (
+	"log"
 	"net/http"
 
 	"My-Api-go/ai" // Sesuaikan dengan nama module di go.mod kamu
@@ -53,4 +54,12 @@ func init() {
 // Handler adalah Entry Point utama yang dipanggil oleh Vercel
 func Handler(w http.ResponseWriter, r *http.Request) {
 	app.ServeHTTP(w, r)
+}
+
+// main dipanggil saat kamu jalankan `go run main.go` atau `air` secara lokal
+func main() {
+	log.Println("Server lokal berjalan di port http://localhost:8080")
+	if err := app.Run(":8080"); err != nil {
+		log.Fatalf("Gagal menjalankan server: %v", err)
+	}
 }
