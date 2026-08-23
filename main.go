@@ -50,3 +50,17 @@ package main
 // 	log.Println("Server Go berjalan di port 8080...")
 // 	r.Run(":8080")
 // }
+
+
+import (
+	"log"
+	"net/http"
+
+	"My-Api-go/api"
+)
+
+func main() {
+	log.Println("Server lokal berjalan di http://localhost:8080")
+	http.HandleFunc("/", api.Handler)
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
