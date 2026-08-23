@@ -3,6 +3,7 @@ package ai
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -11,7 +12,7 @@ import (
 )
 
 const MaxChars = 300
-const MaxHistory =10
+const MaxHistory =6
 
 type FunctionCall struct {
 	Name      string `json:"name"`
@@ -57,7 +58,7 @@ func AskAI() gin.HandlerFunc {
 			return
 		}
 
-		// 1. Sanitasi input user (Maks 100 Karakter)
+		// 1. Sanitasi input user
 		cleanPrompt := strings.TrimSpace(input.Prompt)
 		if cleanPrompt == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Pesan kosong"})
@@ -68,12 +69,28 @@ func AskAI() gin.HandlerFunc {
 			cleanPrompt = string(runes[:MaxChars])
 		}
 
-		// 2. Batasi riwayat percakapan (Maks 10 Pesan Terakhir)
+		// 2. Batasi & Potong (Trim) Riwayat Percakapan agar Hemat Token
 		var limitedHistory []GroqMessage
 		if len(input.Messages) > MaxHistory {
 			limitedHistory = input.Messages[len(input.Messages)-MaxHistory:]
 		} else {
 			limitedHistory = input.Messages
+		}
+
+		var sanitizedHistory []GroqMessage
+		for _, msg := range limitedHistory {
+			content := strings.TrimSpace(msg.Content)
+
+			// POTONG BALASAN AI: Jika riwayat dari 'assistant' panjang, pangkas maks 80 karakter
+			if msg.Role == "assistant" && len([]rune(content)) > 80 {
+				runes := []rune(content)
+				content = string(runes[:80]) + "..."
+			}
+
+			sanitizedHistory = append(sanitizedHistory, GroqMessage{
+				Role:    msg.Role,
+				Content: content,
+			})
 		}
 
 		// 3. System Prompt & Pengenalan Tool
@@ -90,21 +107,20 @@ func AskAI() gin.HandlerFunc {
 
 		var fullMessages []GroqMessage
 		fullMessages = append(fullMessages, systemPrompt)
-		fullMessages = append(fullMessages, limitedHistory...)
+		fullMessages = append(fullMessages, sanitizedHistory...)
 		fullMessages = append(fullMessages, GroqMessage{Role: "user", Content: cleanPrompt})
 
-		// 4. Eksekusi 1 Panggilan AI
-		reply, toolArguments, err := callQwenWithTools(fullMessages)
+		// 4. Eksekusi Panggilan AI dengan Multi-Model Fallback
+		reply, toolArguments, err := callGroqWithFallback(fullMessages)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 
-		// 5. Jika Qwen memutuskan untuk memanggil Tool, jalankan skill.go
+		// 5. Eksekusi Tool Telegram jika dipicu AI
 		if toolArguments != nil {
 			SendTelegramTool(toolArguments.Summary, toolArguments.Contact)
 
-			// Cegah string kosong agar tidak memicu fallback frontend
 			if strings.TrimSpace(reply) == "" {
 				reply = "Terima kasih! Informasi dan kontak Anda sudah saya sampaikan langsung ke Putra. Beliau akan segera menghubungi Anda kembali! 🚀"
 			}
@@ -119,10 +135,17 @@ type LeadArgs struct {
 	Contact string `json:"contact"`
 }
 
-func callQwenWithTools(messages []GroqMessage) (string, *LeadArgs, error) {
+func callGroqWithFallback(messages []GroqMessage) (string, *LeadArgs, error) {
 	apiKey := os.Getenv("GROQ_API_KEY")
 
-	// Schema definisi Tool yang diberikan ke Qwen
+	// Urutan Model: Utama (Qwen) -> Cadangan 1 (Llama 3.3) -> Cadangan 2 (Mixtral)
+	models := []string{
+		"qwen/qwen3.6-27b",
+		"openai/gpt-oss-120b",
+		"openai/gpt-oss-20b",
+		"allam-2-7b",
+	}
+
 	telegramTool := Tool{
 		Type: "function",
 		Function: ToolFunction{
@@ -133,7 +156,7 @@ func callQwenWithTools(messages []GroqMessage) (string, *LeadArgs, error) {
 				"properties": map[string]interface{}{
 					"summary": map[string]string{
 						"type":        "string",
-						"description": "Rangkuman singkat inti diskusi/kebutuhan projek dari 10 riwayat percakapan.",
+						"description": "Rangkuman singkat inti diskusi/kebutuhan projek dari riwayat percakapan.",
 					},
 					"contact": map[string]string{
 						"type":        "string",
@@ -145,55 +168,67 @@ func callQwenWithTools(messages []GroqMessage) (string, *LeadArgs, error) {
 		},
 	}
 
-	reqBody, _ := json.Marshal(GroqRequest{
-		Model:    "qwen/qwen3.6-27b",
-		Messages: messages,
-		Tools:    []Tool{telegramTool},
-	})
+	var lastErr error
 
-	req, _ := http.NewRequest("POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(reqBody))
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	// Rotating/Fallback Mechanism
+	for _, model := range models {
+		reqBody, _ := json.Marshal(GroqRequest{
+			Model:    model,
+			Messages: messages,
+			Tools:    []Tool{telegramTool},
+		})
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
+		req, _ := http.NewRequest("POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(reqBody))
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
 
-	var groqResp struct {
-		Choices []struct {
-			Message struct {
-				Content   string     `json:"content"`
-				ToolCalls []ToolCall `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue // Coba model cadangan berikutnya jika error jaringan
+		}
 
-	if err := json.NewDecoder(resp.Body).Decode(&groqResp); err != nil || len(groqResp.Choices) == 0 {
-		return "Maaf, terjadi kesalahan pada asisten.", nil, nil
-	}
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("model %s error status %d", model, resp.StatusCode)
+			continue // Coba model cadangan berikutnya jika rate limit (429) / server down (500)
+		}
 
-	choice := groqResp.Choices[0].Message
-	replyContent := choice.Content
+		var groqResp struct {
+			Choices []struct {
+				Message struct {
+					Content   string     `json:"content"`
+					ToolCalls []ToolCall `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
 
-	// Bersihkan tag <think> jika ada
-	if idx := strings.Index(replyContent, "</think>"); idx != -1 {
-		replyContent = strings.TrimSpace(replyContent[idx+8:])
-	}
+		err = json.NewDecoder(resp.Body).Decode(&groqResp)
+		resp.Body.Close()
 
-	// Cek apakah Qwen memanggil tool
-	var leadData *LeadArgs
-	if len(choice.ToolCalls) > 0 {
-		for _, tc := range choice.ToolCalls {
-			if tc.Function.Name == "send_lead_to_telegram" {
-				var args LeadArgs
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil {
-					leadData = &args
+		if err == nil && len(groqResp.Choices) > 0 {
+			choice := groqResp.Choices[0].Message
+			replyContent := choice.Content
+
+			if idx := strings.Index(replyContent, "</think>"); idx != -1 {
+				replyContent = strings.TrimSpace(replyContent[idx+8:])
+			}
+
+			var leadData *LeadArgs
+			if len(choice.ToolCalls) > 0 {
+				for _, tc := range choice.ToolCalls {
+					if tc.Function.Name == "send_lead_to_telegram" {
+						var args LeadArgs
+						if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil {
+							leadData = &args
+						}
+					}
 				}
 			}
+
+			return replyContent, leadData, nil
 		}
 	}
 
-	return replyContent, leadData, nil
+	return "Maaf, sistem sedang mengalami antrean tinggi. Boleh coba kirim ulang pesanmu?", nil, lastErr
 }

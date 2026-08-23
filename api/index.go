@@ -44,7 +44,7 @@ func init() {
 	})
 
 	// Endpoint utama untuk menerima chat dari frontend React
-	r.POST("/api/chat/asisten", ai.AskGroqCompoundWithSkill())
+	r.POST("/api/chat/asisten", ai.AskAI())
 	r.POST("/api/chat/asisten/g", ai.AskGemini())
 
 	app = r
