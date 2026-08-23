@@ -146,7 +146,7 @@ func callQwenWithTools(messages []GroqMessage) (string, *LeadArgs, error) {
 	}
 
 	reqBody, _ := json.Marshal(GroqRequest{
-		Model:    "qwen/qwen3.6-27b",
+		Model:    "groq/compound",
 		Messages: messages,
 		Tools:    []Tool{telegramTool},
 	})
