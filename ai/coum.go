@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Struct Payload dan Response untuk Handler Gin & Compound JSON
 type CompoundPayload struct {
 	Prompt   string        `json:"prompt"`
 	Messages []GroqMessage `json:"messages"`
@@ -25,7 +24,6 @@ type CompoundAIResponse struct {
 	Summary      string `json:"summary"`
 }
 
-// Handler Utama Gin
 func AskGroqCompoundWithSkill() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input CompoundPayload
@@ -40,7 +38,12 @@ func AskGroqCompoundWithSkill() gin.HandlerFunc {
 			return
 		}
 
-		// Batasi history percakapan
+		// Batasi maksimal karakter input agar efisien
+		runes := []rune(cleanPrompt)
+		if len(runes) > MaxChars {
+			cleanPrompt = string(runes[:MaxChars])
+		}
+
 		var limitedHistory []GroqMessage
 		if len(input.Messages) > MaxHistory {
 			limitedHistory = input.Messages[len(input.Messages)-MaxHistory:]
@@ -48,16 +51,13 @@ func AskGroqCompoundWithSkill() gin.HandlerFunc {
 			limitedHistory = input.Messages
 		}
 
-		// Panggil AI Compound
 		parsedResp, err := callGroqCompoundJSON(cleanPrompt, limitedHistory)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 
-		// Jika Compound menginstruksikan untuk kirim ke Telegram (send_telegram = true)
 		if parsedResp.SendTelegram {
-			// Menggunakan SendTelegramTool dari skill.go
 			SendTelegramTool(parsedResp.Summary, parsedResp.Contact)
 		}
 
@@ -65,7 +65,6 @@ func AskGroqCompoundWithSkill() gin.HandlerFunc {
 	}
 }
 
-// Fungsi Panggilan API ke Groq Model `groq/compound`
 func callGroqCompoundJSON(prompt string, history []GroqMessage) (*CompoundAIResponse, error) {
 	apiKey := os.Getenv("GROQ_API_KEY")
 	if apiKey == "" {
@@ -74,38 +73,45 @@ func callGroqCompoundJSON(prompt string, history []GroqMessage) (*CompoundAIResp
 
 	systemPrompt := "Kamu adalah asisten portofolio Putra Nur Rohman (Full-Stack & Backend Developer Go).\n" +
 		"Jawablah dengan ramah, singkat, dan gunakan emoji.\n\n" +
-		"TUGAS UTAMA: Jawab pertanyaan user dan tentukan apakah perlu mengirim notifikasi ke Telegram internal Putra.\n" +
-		"Wajib berikan output JSON murni dengan format persis seperti ini:\n" +
-		`{"reply": "pesan balasan ke user", "send_telegram": true, "contact": "nomor/email user", "summary": "rangkuman projek"}` + "\n\n" +
 		"ATURAN BANTUAN & PROSPEK:\n" +
 		"1. Jika user berniat order/rekrut, minta kontak (Nomor WA/Email) mereka.\n" +
-		"2. Jika user memberikan kontak, jangan langsung set send_telegram ke true. Tanya konfirmasi/validasi ke user dulu.\n" +
-		"3. Jika user SUDAH mengonfirmasi/setuju (misal: 'ya', 'oke', 'setuju', 'boleh', 'sampaikan', 'kirim'), set 'send_telegram': true.\n" +
-		"4. Jika user bertanya nominal seperti '100k' atau '1000k', pahami bahwa 'k' berarti ribu (misal 100k = 100 ribu). Jelaskan estimasi fitur/website yang bisa didapatkan dengan anggaran tersebut secara bijak.\n" +
-		"5. Pada field 'contact', ambil Nama dan Kontak (WA/Email) dari riwayat chat.\n" +
-		"6. Pada field 'summary', buat rangkuman lengkap mengenai jenis projek, fitur utama, estimasi budget, serta kendala/catatan khusus user dari riwayat percakapan."
-	var messages []map[string]string
-	messages = append(messages, map[string]string{"role": "system", "content": systemPrompt})
+		"2. Jika user memberikan kontak, jangan langsung panggil tool `send_lead_to_telegram`. Tanya konfirmasi/validasi dulu.\n" +
+		"3. Jika user SUDAH mengonfirmasi/setuju (misal: 'ya', 'oke', 'setuju'), panggil tool `send_lead_to_telegram`.\n" +
+		"4. Jika user bertanya nominal seperti '100k', pahami bahwa 'k' berarti ribu."
 
-	for _, msg := range history {
-		role := "user"
-		if msg.Role == "assistant" || msg.Role == "model" {
-			role = "assistant"
-		}
-		messages = append(messages, map[string]string{"role": role, "content": msg.Content})
-	}
-	messages = append(messages, map[string]string{"role": "user", "content": prompt})
-
-	// Paksa format JSON via response_format
-	payload := map[string]interface{}{
-		"model": "groq/compound",
-		"messages": messages,
-		"response_format": map[string]string{
-			"type": "json_object",
+	telegramTool := Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "send_lead_to_telegram",
+			Description: "Mengirimkan rangkuman prospek dan nomor kontak klien ke Telegram ketika klien sudah mengonfirmasi setuju.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"summary": map[string]string{
+						"type":        "string",
+						"description": "Rangkuman lengkap mengenai jenis projek, fitur utama, dan budget dari riwayat percakapan.",
+					},
+					"contact": map[string]string{
+						"type":        "string",
+						"description": "Nama, Nomor WA, Telepon, atau Email klien.",
+					},
+				},
+				"required": []string{"summary", "contact"},
+			},
 		},
 	}
 
-	reqBody, _ := json.Marshal(payload)
+	var messages []GroqMessage
+	messages = append(messages, GroqMessage{Role: "system", Content: systemPrompt})
+	messages = append(messages, history...)
+	messages = append(messages, GroqMessage{Role: "user", Content: prompt})
+
+	reqBody, _ := json.Marshal(GroqRequest{
+		Model:    "groq/compound",
+		Messages: messages,
+		Tools:    []Tool{telegramTool},
+	})
+
 	req, _ := http.NewRequest("POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(reqBody))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -124,7 +130,8 @@ func callGroqCompoundJSON(prompt string, history []GroqMessage) (*CompoundAIResp
 	var groqResp struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string     `json:"content"`
+				ToolCalls []ToolCall `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -133,19 +140,35 @@ func callGroqCompoundJSON(prompt string, history []GroqMessage) (*CompoundAIResp
 		return nil, fmt.Errorf("Gagal parsing balasan Groq API")
 	}
 
-	rawReply := groqResp.Choices[0].Message.Content
+	choice := groqResp.Choices[0].Message
+	replyContent := choice.Content
 
-	// Print ke terminal VS Code untuk memantau JSON dari Compound
-	fmt.Println("--- RAW JSON FROM COMPOUND ---")
-	fmt.Println(rawReply)
-
-	var result CompoundAIResponse
-	if err := json.Unmarshal([]byte(rawReply), &result); err != nil {
-		return &CompoundAIResponse{
-			Reply:        rawReply,
-			SendTelegram: false,
-		}, nil
+	if idx := strings.Index(replyContent, "</think>"); idx != -1 {
+		replyContent = strings.TrimSpace(replyContent[idx+8:])
 	}
 
-	return &result, nil
+	res := &CompoundAIResponse{
+		Reply:        replyContent,
+		SendTelegram: false,
+	}
+
+	if len(choice.ToolCalls) > 0 {
+		for _, tc := range choice.ToolCalls {
+			if tc.Function.Name == "send_lead_to_telegram" {
+				var args LeadArgs
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil {
+					res.SendTelegram = true
+					res.Contact = args.Contact
+					res.Summary = args.Summary
+				}
+			}
+		}
+
+		// Cegah balasan kosong jika AI fokus memanggil tool tanpa mengisi teks balasan
+		if strings.TrimSpace(res.Reply) == "" {
+			res.Reply = "Terima kasih! Informasi dan kontak Anda sudah saya sampaikan langsung ke Putra. Beliau akan segera menghubungi Anda kembali! 🚀"
+		}
+	}
+
+	return res, nil
 }
