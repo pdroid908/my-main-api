@@ -1,0 +1,17 @@
+# Air live-reload temporary folder
+tmp/
+/tmp
+
+# Go Binaries & Executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+
+
+# File environment lokal
+.env
