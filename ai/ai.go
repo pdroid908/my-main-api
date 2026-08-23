@@ -11,7 +11,7 @@ import (
 )
 
 const MaxChars = 300
-const MaxHistory =4
+const MaxHistory =10
 
 type FunctionCall struct {
 	Name      string `json:"name"`
