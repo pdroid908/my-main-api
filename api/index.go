@@ -43,7 +43,8 @@ func init() {
 		c.Next()
 	})
 
-	// Endpoint utama untuk menerima chat dari frontend React
+	// Endpoint utama untuk menerima chat dari frontend PORTOFOLIO //
+	//=====================PENTING=============================//
 	r.POST("/api/chat/asisten", ai.AskAI())
 	r.POST("/api/chat/asisten/g", ai.AskGemini())
 

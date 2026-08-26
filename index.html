@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compound AI Code Command Center</title>
+    <style>
+        body { font-family: 'Courier New', monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 20px; }
+        .container { max-width: 950px; margin: auto; }
+        h2 { color: #58a6ff; margin-bottom: 5px; }
+        p.subtitle { color: #8b949e; margin-top: 0; font-size: 13px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 15px; margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #8b949e; }
+        
+        /* Area Drag & Drop */
+        .drop-zone {
+            border: 2px dashed #30363d;
+            border-radius: 6px;
+            padding: 25px;
+            text-align: center;
+            background: #0d1117;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .drop-zone.dragover { border-color: #58a6ff; background: #1f242c; }
+        .drop-zone p { margin: 0; color: #8b949e; font-size: 14px; }
+        .file-info { color: #3fb950; font-weight: bold; margin-top: 8px; font-size: 13px; }
+
+        input[type="text"], textarea { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 10px; border-radius: 4px; box-sizing: border-box; font-family: monospace; }
+        textarea { height: 100px; resize: vertical; display: none; } /* Disembunyikan, diisi otomatis dari drag & drop */
+        
+        .command-box { display: flex; gap: 10px; margin-top: 10px; }
+        .command-box input { flex: 1; }
+        
+        button { background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #2ea043; }
+        
+        .output { background: #0d1117; border: 1px solid #30363d; padding: 15px; border-radius: 4px; white-space: pre-wrap; margin-top: 10px; max-height: 450px; overflow-y: auto; font-size: 13px; line-height: 1.4; }
+        .history-tag { display: inline-block; background: #21262d; border: 1px solid #30363d; padding: 3px 8px; border-radius: 4px; font-size: 11px; margin-right: 5px; margin-bottom: 5px; color: #7ee787; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>⚡ Groq Compound Command Center</h2>
+        <p class="subtitle">Drag & Drop file kode ke sini, lalu berikan command singkat ke AI.</p>
+        
+        <div class="card">
+            <!-- Area Drag & Drop File -->
+            <label>📂 Upload / Drop File Kode (Go, JS, Python, dll):</label>
+            <div id="dropZone" class="drop-zone">
+                <p>Seret file ke sini atau <strong>klik untuk pilih file</strong></p>
+                <div id="fileInfo" class="file-info">Belum ada file yang dimuat.</div>
+                <input type="file" id="fileInput" style="display: none;">
+            </div>
+
+            <!-- Textarea tersembunyi untuk menampung isi file -->
+            <textarea id="fileContent"></textarea>
+
+            <div style="margin-top: 15px;">
+                <label>💬 Command / Perintah AI:</label>
+                <div class="command-box">
+                    <input type="text" id="userPrompt" placeholder="Contoh: /review atau /fix-bug atau Tulis instruksi bebas...">
+                    <button onclick="sendCommand()">Eksekusi 🚀</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <label>🧠 Status Memori File yang Diingat AI:</label>
+            <div id="memoryTags" style="min-height: 25px;">
+                <span style="color: #8b949e; font-size: 12px;">Belum ada file dalam memori sesi.</span>
+            </div>
+
+            <label style="margin-top: 15px;">🤖 Output Respons Compound:</label>
+            <div id="responseOutput" class="output">Menunggu perintah...</div>
+        </div>
+    </div>
+
+    <script>
+        let chatMemory = [];
+        let currentFileName = "snippet.go";
+        let loadedFilesHistory = new Set();
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileContentArea = document.getElementById('fileContent');
+
+        // Event Drag & Drop
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            currentFileName = file.name;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                fileContentArea.value = e.target.result;
+                fileInfo.innerText = `✅ Berhasil dimuat: ${file.name} (${file.size} bytes)`;
+            };
+            reader.readAsText(file);
+        }
+
+        async function sendCommand() {
+            const fileContent = fileContentArea.value;
+            let prompt = document.getElementById('userPrompt').value.trim();
+            const outputDiv = document.getElementById('responseOutput');
+
+            if (!fileContent && !prompt) {
+                alert("Masukkan file atau ketik command terlebih dahulu!");
+                return;
+            }
+
+            // Jika user pakai command pendek, kita perluas otomatis
+            if (prompt === "/review") {
+                prompt = "Tolong review kode ini secara mendalam, cek keamanan, dan optimasi performanya.";
+            } else if (prompt === "/fix") {
+                prompt = "Tolong cari potensi bug atau error logic di kode ini dan berikan perbaikannya.";
+            } else if (prompt === "/koneksi") {
+                prompt = "Analisis bagian inisialisasi koneksi, dependency, dan package yang digunakan di file ini.";
+            } else if (!prompt) {
+                prompt = "Tolong analisis file ini.";
+            }
+
+            outputDiv.innerText = `⏳ Memproses file [${currentFileName}] dengan perintah [${prompt}]...`;
+
+            try {
+                const response = await fetch('/api/code-assist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_name: currentFileName,
+                        file_content: fileContent,
+                        prompt: prompt,
+                        memory: chatMemory
+                    })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    outputDiv.innerText = data.reply;
+                    chatMemory = data.memory;
+
+                    // Catat ke riwayat memori UI
+                    loadedFilesHistory.add(currentFileName);
+                    updateMemoryTags();
+
+                    // Bersihkan input file setelah terkirim agar bisa drag file lain
+                    fileContentArea.value = "";
+                    document.getElementById('userPrompt').value = "";
+                    fileInfo.innerText = `✔️ File ${currentFileName} sudah masuk memori AI. (Silakan drop file lain jika ada)`;
+                } else {
+                    outputDiv.innerText = "Error: " + data.error;
+                }
+            } catch (err) {
+                outputDiv.innerText = "Gagal terhubung ke server: " + err.message;
+            }
+        }
+
+        function updateMemoryTags() {
+            const container = document.getElementById('memoryTags');
+            container.innerHTML = "";
+            loadedFilesHistory.forEach(filename => {
+                const tag = document.createElement('span');
+                tag.className = "history-tag";
+                tag.innerText = `📄 ${filename}`;
+                container.appendChild(tag);
+            });
+        }
+    </script>
+</body>
+</html>

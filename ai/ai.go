@@ -12,7 +12,7 @@ import (
 )
 
 const MaxChars = 300
-const MaxHistory =6
+const MaxHistory = 6
 
 type FunctionCall struct {
 	Name      string `json:"name"`
@@ -23,9 +23,9 @@ type ToolCall struct {
 }
 
 type GroqMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type ToolFunction struct {
@@ -100,7 +100,7 @@ func AskAI() gin.HandlerFunc {
 			"1. Jika user berniat order/rekrut, minta kontak mereka.\n" +
 			"2. Jika user memberikan kontak, jangan langsung jalankan tool tanya validasi konfirmasi ke user dulu.\n" +
 			"3. Jika user SUDAH mengonfirmasi/setuju (misal: 'ya', 'oke', 'setuju'), panggil tool `send_lead_to_telegram` " +
-			"4. jika user bilang 100k berarti k itu ribu, berarti user tanya uang segitu bisa dapat web/fitur apa"+
+			"4. jika user bilang 100k berarti k itu ribu, berarti user tanya uang segitu bisa dapat web/fitur apa" +
 			"dengan merangkum inti dari 10 riwayat percakapan dan sertakan nomor kontaknya."
 
 		systemPrompt := GroqMessage{Role: "system", Content: systemContent}
@@ -119,7 +119,14 @@ func AskAI() gin.HandlerFunc {
 
 		// 5. Eksekusi Tool Telegram jika dipicu AI
 		if toolArguments != nil {
-			SendTelegramTool(toolArguments.Summary, toolArguments.Contact)
+			err := SendTelegramTool(
+				toolArguments.Summary,
+				toolArguments.Contact,
+			)
+
+			if err != nil {
+				fmt.Println("Telegram notification error:", err)
+			}
 
 			if strings.TrimSpace(reply) == "" {
 				reply = "Terima kasih! Informasi dan kontak Anda sudah saya sampaikan langsung ke Putra. Beliau akan segera menghubungi Anda kembali! 🚀"

@@ -6,35 +6,58 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 )
 
-// Tool/Skill murni: Menerima data rangkuman & kontak, lalu kirim ke Telegram
-func SendTelegramTool(summary string, contact string) {
+func SendTelegramTool(summary string, contact string) error {
 	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	chatID := os.Getenv("TELEGRAM_CHAT_ID")
 
 	if botToken == "" || chatID == "" {
-		return
+		return fmt.Errorf("telegram configuration tidak tersedia")
 	}
 
 	textMessage := fmt.Sprintf(
 		"🚨 *PROSPEK KLIEN BARU*\n\n"+
 			"📱 *Kontak*: %s\n"+
 			"📝 *Rangkuman Projek*:\n%s",
-		contact, summary,
+		contact,
+		summary,
 	)
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
+	url := fmt.Sprintf(
+		"https://api.telegram.org/bot%s/sendMessage",
+		botToken,
+	)
+
 	payload := map[string]string{
 		"chat_id":    chatID,
 		"text":       textMessage,
 		"parse_mode": "Markdown",
 	}
 
-	jsonPayload, _ := json.Marshal(payload)
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal telegram payload: %w", err)
+	}
 
-	// Kirim ke Telegram via Goroutine (Asynchronous)
-	go func() {
-		_, _ = http.Post(url, "application/json", bytes.NewBuffer(jsonPayload))
-	}()
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(
+		url,
+		"application/json",
+		bytes.NewBuffer(jsonPayload),
+	)
+	if err != nil {
+		return fmt.Errorf("telegram request gagal: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram mengembalikan status %d", resp.StatusCode)
+	}
+
+	return nil
 }
